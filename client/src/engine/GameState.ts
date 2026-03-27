@@ -151,6 +151,8 @@ class GameStateManager {
         totalPages: data.room.totalPages,
         players: playerMap,
         myPlayer,
+        isLoading: false,
+        loadingProgress: 100,
       });
     });
 
@@ -167,6 +169,8 @@ class GameStateManager {
         pagesCollected: 0,
         players: playerMap,
         myPlayer,
+        isLoading: false,
+        loadingProgress: 100,
       });
     });
 

@@ -104,6 +104,12 @@ function registerGameEvents(io, socket, rooms) {
             }
         }
     });
+    // Ping/pong for latency measurement
+    socket.on('ping', (callback) => {
+        if (typeof callback === 'function') {
+            callback();
+        }
+    });
     // Disconnect handler
     function leaveRoom(roomId) {
         const room = rooms.get(roomId);
