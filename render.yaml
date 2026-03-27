@@ -1,0 +1,44 @@
+# Render deployment configuration
+# Deploy to: https://render.com
+
+services:
+  - type: web
+    name: hollow-man-server
+    runtime: docker
+    repo: https://github.com/yourusername/hollow-man
+    branch: main
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: ./server
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: LOG_LEVEL
+        value: info
+    healthCheckPath: /health
+    autoDeploy: true
+    plan: standard
+    numInstances: 1
+    scaling:
+      minInstances: 1
+      maxInstances: 3
+      targetCPUPercent: 70
+      targetMemoryPercent: 80
+
+  - type: web
+    name: hollow-man-client
+    runtime: docker
+    repo: https://github.com/yourusername/hollow-man
+    branch: main
+    dockerfilePath: ./client/Dockerfile
+    dockerContext: ./client
+    envVars:
+      - key: VITE_SERVER_URL
+        fromService:
+          name: hollow-man-server
+          type: web
+          property: hostport
+    healthCheckPath: /
+    autoDeploy: true
+    plan: standard

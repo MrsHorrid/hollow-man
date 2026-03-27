@@ -11,6 +11,7 @@ const App: React.FC = () => {
   const [playerName, setPlayerName] = useState('');
   const [roomName, setRoomName] = useState('');
   const [loading, setLoading] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   useEffect(() => {
     gameState.connect();
@@ -28,11 +29,20 @@ const App: React.FC = () => {
   const handleCreateRoom = async () => {
     if (!playerName.trim()) return;
     setLoading(true);
-    const id = await gameState.createRoom(roomName || `Room_${Math.random().toString(36).slice(2, 6)}`);
-    if (id) {
-      gameState.joinRoom(id, playerName);
+    setCreateError(null);
+    try {
+      const id = await gameState.createRoom(roomName || `Room_${Math.random().toString(36).slice(2, 6)}`);
+      if (id) {
+        gameState.joinRoom(id, playerName);
+      } else {
+        setCreateError('Could not create room. Is the server running?');
+      }
+    } catch (err) {
+      console.error('handleCreateRoom error:', err);
+      setCreateError('Unexpected error. Please try again.');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const handleJoinRoom = (roomId: string) => {
@@ -237,6 +247,26 @@ const App: React.FC = () => {
     return (
       <HorrorScreen>
         <div style={{ width: '500px' }}>
+          {/* Connection status */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            marginBottom: '12px',
+            fontSize: '10px',
+            letterSpacing: '2px',
+            color: gs.isConnected ? 'rgba(50,255,50,0.6)' : 'rgba(255,100,50,0.7)',
+          }}>
+            <div style={{
+              width: '6px',
+              height: '6px',
+              borderRadius: '50%',
+              background: gs.isConnected ? '#44ff44' : '#ff6622',
+              boxShadow: gs.isConnected ? '0 0 6px #44ff44' : '0 0 6px #ff6622',
+            }} />
+            {gs.isConnected ? 'SERVER CONNECTED' : 'SERVER DISCONNECTED — CANNOT CREATE ROOMS'}
+          </div>
+
           <button
             onClick={goToTitle}
             style={{
@@ -285,11 +315,26 @@ const App: React.FC = () => {
             />
             <button
               onClick={handleCreateRoom}
-              disabled={!playerName.trim() || loading}
-              style={{ ...horrorButtonStyle, width: '100%', opacity: playerName.trim() ? 1 : 0.4 }}
+              disabled={!playerName.trim() || loading || !gs.isConnected}
+              style={{ ...horrorButtonStyle, width: '100%', opacity: (playerName.trim() && gs.isConnected) ? 1 : 0.4 }}
             >
               {loading ? 'CREATING...' : 'CREATE NEW ROOM'}
             </button>
+            {createError && (
+              <div style={{
+                marginTop: '10px',
+                padding: '8px 12px',
+                background: 'rgba(150,0,0,0.3)',
+                border: '1px solid rgba(255,50,50,0.5)',
+                borderRadius: '3px',
+                color: '#ff6666',
+                fontSize: '11px',
+                letterSpacing: '1px',
+                textAlign: 'center',
+              }}>
+                ⚠ {createError}
+              </div>
+            )}
           </div>
 
           {/* Join room */}
@@ -353,12 +398,12 @@ const App: React.FC = () => {
                     </div>
                     <button
                       onClick={() => handleJoinRoom(room.id)}
-                      disabled={!playerName.trim()}
+                      disabled={!playerName.trim() || !gs.isConnected}
                       style={{
                         ...horrorButtonStyle,
                         padding: '8px 16px',
                         fontSize: '10px',
-                        opacity: playerName.trim() ? 1 : 0.4,
+                        opacity: (playerName.trim() && gs.isConnected) ? 1 : 0.4,
                       }}
                     >
                       JOIN

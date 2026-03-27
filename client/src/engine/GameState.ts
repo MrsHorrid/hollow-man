@@ -56,9 +56,15 @@ class GameStateManager {
   private listeners: Set<GameStateListener> = new Set();
 
   connect(): void {
-    if (this.socket?.connected) return;
+    // Don't create a second socket if one already exists (handles React StrictMode double-invoke)
+    if (this.socket) return;
 
-    this.socket = io(SERVER_URL, { autoConnect: true });
+    this.socket = io(SERVER_URL, {
+      autoConnect: true,
+      reconnection: true,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
+    });
 
     this.socket.on('connect', () => {
       this.update({ playerId: this.socket!.id ?? null, isConnected: true });
@@ -202,25 +208,44 @@ class GameStateManager {
   }
 
   async fetchRooms(): Promise<void> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
     try {
-      const res = await fetch(`${SERVER_URL}/rooms`);
+      const res = await fetch(`${SERVER_URL}/rooms`, { signal: controller.signal });
+      clearTimeout(timeout);
+      if (!res.ok) return;
       const rooms = await res.json();
       this.update({ availableRooms: rooms });
     } catch (e) {
-      console.error('Failed to fetch rooms', e);
+      clearTimeout(timeout);
+      console.error('[GameState] Failed to fetch rooms:', e);
     }
   }
 
   async createRoom(name: string): Promise<string | null> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
     try {
       const res = await fetch(`${SERVER_URL}/rooms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
+        signal: controller.signal,
       });
+      clearTimeout(timeout);
+      if (!res.ok) {
+        console.error('[GameState] createRoom HTTP error:', res.status);
+        return null;
+      }
       const data = await res.json();
-      return data.id;
-    } catch {
+      return data.id ?? null;
+    } catch (err: unknown) {
+      clearTimeout(timeout);
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.error('[GameState] createRoom timed out - is the server running?');
+      } else {
+        console.error('[GameState] createRoom failed:', err);
+      }
       return null;
     }
   }

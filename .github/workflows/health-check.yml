@@ -1,0 +1,53 @@
+name: Daily Health Check
+
+on:
+  schedule:
+    # Run every day at 9:00 AM UTC
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+env:
+  PROD_URL: ${{ secrets.PROD_URL }}
+  STAGING_URL: ${{ secrets.STAGING_URL }}
+
+jobs:
+  health-check:
+    name: Health Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Check Production Server Health
+        run: |
+          if [ -n "$PROD_URL" ]; then
+            echo "Checking production server health..."
+            response=$(curl -s -o /dev/null -w "%{http_code}" "$PROD_URL/health" || echo "000")
+            if [ "$response" = "200" ]; then
+              echo "✅ Production server is healthy"
+            else
+              echo "❌ Production server health check failed (HTTP $response)"
+              exit 1
+            fi
+          else
+            echo "⚠️ PROD_URL not set, skipping production check"
+          fi
+
+      - name: Check Staging Server Health
+        run: |
+          if [ -n "$STAGING_URL" ]; then
+            echo "Checking staging server health..."
+            response=$(curl -s -o /dev/null -w "%{http_code}" "$STAGING_URL/health" || echo "000")
+            if [ "$response" = "200" ]; then
+              echo "✅ Staging server is healthy"
+            else
+              echo "❌ Staging server health check failed (HTTP $response)"
+              exit 1
+            fi
+          else
+            echo "⚠️ STAGING_URL not set, skipping staging check"
+          fi
+
+      - name: Notify on Failure
+        if: failure()
+        run: |
+          echo "🚨 Health check failed!"
+          # Add notification logic here (Slack, email, etc.)
