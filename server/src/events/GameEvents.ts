@@ -132,6 +132,13 @@ export function registerGameEvents(
     }
   });
 
+  // Ping/pong for latency measurement
+  socket.on('ping', (callback) => {
+    if (typeof callback === 'function') {
+      callback();
+    }
+  });
+
   // Disconnect handler
   function leaveRoom(roomId: string): void {
     const room = rooms.get(roomId);

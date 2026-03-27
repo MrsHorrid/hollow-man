@@ -6,18 +6,24 @@ import { Jumpscare } from './Jumpscare';
 import { PuzzleModal } from './Puzzle';
 import { VoiceChat } from './VoiceChat';
 import { GamePhase, JumpscareEvent, SocketEvents, Puzzle } from '@shared/types/game';
+import { AmbientEventsManager } from '../engine/AmbientEvents';
+import { PerformanceOptimizer } from '../engine/PerformanceOptimizer';
 import * as THREE from 'three';
 
 export const Game: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sceneRef = useRef<ForestScene | null>(null);
+  const ambientEventsRef = useRef<AmbientEventsManager | null>(null);
+  const performanceRef = useRef<PerformanceOptimizer | null>(null);
   const animFrameRef = useRef<number>(0);
   const [state, setState] = useState<LocalGameState>(gameState.getState());
   const [jumpscare, setJumpscare] = useState<JumpscareEvent | null>(null);
   const [activePuzzle, setActivePuzzle] = useState<Puzzle | null>(null);
   const [interactionPrompt, setInteractionPrompt] = useState<string | null>(null);
   const [screenShakeActive, setScreenShakeActive] = useState(false);
+  const [fps, setFps] = useState(60);
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stressLevelRef = useRef(0);
 
   useEffect(() => {
     const unsub = gameState.subscribe(newState => {
@@ -80,6 +86,37 @@ export const Game: React.FC = () => {
     const scene = new ForestScene(canvasRef.current);
     sceneRef.current = scene;
 
+    // Initialize ambient events
+    const ambientEvents = new AmbientEventsManager(scene.scene, scene.camera);
+    ambientEventsRef.current = ambientEvents;
+    ambientEvents.setActive(true);
+
+    // Subscribe to ambient events for audio
+    ambientEvents.subscribe((event) => {
+      // Play ambient sound based on event type
+      const volume = event.intensity * 0.5;
+      switch (event.type) {
+        case 'branch_snap':
+        case 'twig_break':
+          soundManager.playSfx('branch_snap', { volume });
+          break;
+        case 'whisper':
+          soundManager.playSfx('whisper', { volume });
+          break;
+        case 'distant_footstep':
+          soundManager.playSfx('footstep', { volume: volume * 0.3 });
+          break;
+        case 'distant_scream':
+          soundManager.playSfx('monster_scream', { volume: volume * 0.4 });
+          break;
+      }
+    });
+
+    // Initialize performance optimizer
+    const renderer = (scene as any).renderer as THREE.WebGLRenderer;
+    const performance = new PerformanceOptimizer(scene.scene, renderer, scene.camera);
+    performanceRef.current = performance;
+
     scene.setupPages(state.pages);
     scene.setupPuzzles(state.puzzles);
 
@@ -114,9 +151,30 @@ export const Game: React.FC = () => {
     };
 
     // Start render loop
+    let lastTime = performance.now();
     const animate = () => {
       animFrameRef.current = requestAnimationFrame(animate);
+      const now = performance.now();
+      const deltaTime = (now - lastTime) / 1000;
+      lastTime = now;
+
       const gs = gameState.getState();
+
+      // Update ambient events
+      if (ambientEventsRef.current) {
+        // Calculate stress level based on monster proximity
+        const monsterDist = gs.monsterDistance;
+        stressLevelRef.current = monsterDist < 30 ? 1 - (monsterDist / 30) : 0;
+        ambientEventsRef.current.update(deltaTime, stressLevelRef.current);
+      }
+
+      // Update performance metrics
+      if (performanceRef.current) {
+        const metrics = performanceRef.current.update();
+        if (Math.random() < 0.02) { // Update FPS display occasionally
+          setFps(metrics.fps);
+        }
+      }
 
       if (gs.monster) {
         scene.updateMonster(gs.monster);
@@ -173,6 +231,8 @@ export const Game: React.FC = () => {
     return () => {
       cancelAnimationFrame(animFrameRef.current);
       window.removeEventListener('resize', onResize);
+      ambientEventsRef.current?.destroy();
+      performanceRef.current?.dispose();
       scene.destroy();
       sceneRef.current = null;
       if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current);
@@ -321,6 +381,25 @@ export const Game: React.FC = () => {
       {interactionPrompt && (
         <div className="interaction-prompt">
           {interactionPrompt}
+        </div>
+      )}
+
+      {/* FPS Counter (debug) */}
+      {import.meta.env.DEV && (
+        <div style={{
+          position: 'fixed',
+          top: '10px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          fontSize: '10px',
+          color: fps >= 55 ? '#44ff44' : fps >= 30 ? '#ffaa00' : '#ff4444',
+          fontFamily: 'monospace',
+          zIndex: 1000,
+          background: 'rgba(0,0,0,0.5)',
+          padding: '2px 8px',
+          borderRadius: '3px',
+        }}>
+          FPS: {fps}
         </div>
       )}
 

@@ -4,6 +4,8 @@ import { io, Socket } from 'socket.io-client';
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
 
+export type ConnectionState = 'connected' | 'connecting' | 'disconnected' | 'reconnecting' | 'error';
+
 export interface LocalGameState {
   phase: GamePhase;
   roomId: string | null;
@@ -21,6 +23,12 @@ export interface LocalGameState {
   showInteraction: string | null;
   monsterDistance: number;
   isConnected: boolean;
+  connectionState: ConnectionState;
+  connectionError?: string;
+  latency: number;
+  isLoading: boolean;
+  loadingMessage: string;
+  loadingProgress: number;
 }
 
 export interface RoomInfo {
@@ -52,27 +60,79 @@ class GameStateManager {
     showInteraction: null,
     monsterDistance: Infinity,
     isConnected: false,
+    connectionState: 'disconnected',
+    latency: 0,
+    isLoading: false,
+    loadingMessage: '',
+    loadingProgress: 0,
   };
   private listeners: Set<GameStateListener> = new Set();
+  private latencyInterval: ReturnType<typeof setInterval> | null = null;
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 10;
 
   connect(): void {
     // Don't create a second socket if one already exists (handles React StrictMode double-invoke)
     if (this.socket) return;
 
+    this.update({ connectionState: 'connecting', isLoading: true, loadingMessage: 'Connecting to server...' });
+
     this.socket = io(SERVER_URL, {
       autoConnect: true,
       reconnection: true,
-      reconnectionAttempts: 10,
+      reconnectionAttempts: this.maxReconnectAttempts,
       reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 20000,
     });
 
     this.socket.on('connect', () => {
-      this.update({ playerId: this.socket!.id ?? null, isConnected: true });
+      this.reconnectAttempts = 0;
+      this.update({ 
+        playerId: this.socket!.id ?? null, 
+        isConnected: true, 
+        connectionState: 'connected',
+        connectionError: undefined,
+        isLoading: false,
+        loadingProgress: 100,
+      });
       this.fetchRooms();
+      this.startLatencyCheck();
     });
 
-    this.socket.on('disconnect', () => {
-      this.update({ isConnected: false });
+    this.socket.on('connect_error', (err) => {
+      console.error('[GameState] Connection error:', err.message);
+      this.update({ 
+        connectionState: 'error', 
+        connectionError: err.message,
+        isLoading: false,
+      });
+    });
+
+    this.socket.on('disconnect', (reason) => {
+      this.update({ 
+        isConnected: false, 
+        connectionState: reason === 'io client disconnect' ? 'disconnected' : 'reconnecting',
+      });
+      this.stopLatencyCheck();
+    });
+
+    this.socket.io.on('reconnect_attempt', (attempt) => {
+      this.reconnectAttempts = attempt;
+      this.update({ 
+        connectionState: 'reconnecting',
+        isLoading: true,
+        loadingMessage: `Reconnecting... (${attempt}/${this.maxReconnectAttempts})`,
+        loadingProgress: (attempt / this.maxReconnectAttempts) * 100,
+      });
+    });
+
+    this.socket.io.on('reconnect_failed', () => {
+      this.update({ 
+        connectionState: 'error',
+        connectionError: 'Failed to reconnect after multiple attempts',
+        isLoading: false,
+      });
     });
 
     this.socket.on(SocketEvents.ROOM_STATE, (data: { room: GameRoom; players: Player[] }) => {
@@ -181,7 +241,29 @@ class GameStateManager {
 
     this.socket.on('error', (err: { message: string }) => {
       console.error('[GameState] Server error:', err.message);
+      this.update({ connectionError: err.message });
     });
+  }
+
+  private startLatencyCheck(): void {
+    this.latencyInterval = setInterval(() => {
+      const start = Date.now();
+      this.socket?.emit('ping', () => {
+        const latency = Date.now() - start;
+        this.update({ latency });
+      });
+    }, 5000);
+  }
+
+  private stopLatencyCheck(): void {
+    if (this.latencyInterval) {
+      clearInterval(this.latencyInterval);
+      this.latencyInterval = null;
+    }
+  }
+
+  setLoading(loading: boolean, message: string = '', progress: number = 0): void {
+    this.update({ isLoading: loading, loadingMessage: message, loadingProgress: progress });
   }
 
   private update(partial: Partial<LocalGameState>): void {
@@ -288,6 +370,14 @@ class GameStateManager {
     this.socket?.emit(SocketEvents.VOICE_DATA, audioData);
   }
 
+  reconnect(): void {
+    if (this.socket) {
+      this.socket.connect();
+    } else {
+      this.connect();
+    }
+  }
+
   setInteractionPrompt(prompt: string | null): void {
     if (this.state.showInteraction !== prompt) {
       this.update({ showInteraction: prompt });
@@ -295,7 +385,14 @@ class GameStateManager {
   }
 
   disconnect(): void {
+    this.stopLatencyCheck();
     this.socket?.disconnect();
+    this.socket = null;
+    this.update({ 
+      isConnected: false, 
+      connectionState: 'disconnected',
+      connectionError: undefined,
+    });
   }
 }
 

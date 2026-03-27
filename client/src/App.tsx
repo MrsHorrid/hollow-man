@@ -1,7 +1,15 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { gameState, LocalGameState, RoomInfo } from './engine/GameState';
+import { gameState, LocalGameState, RoomInfo, ConnectionState } from './engine/GameState';
 import { Game } from './components/Game';
-import { GamePhase } from '@shared/types/game';
+import { GamePhase, GameRoom } from '@shared/types/game';
+import { LoadingScreen, injectLoadingStyles } from './components/LoadingScreen';
+import { ConnectionStatus } from './components/ConnectionStatus';
+import { ErrorMessage, ErrorType } from './components/ErrorMessage';
+import { EnhancedLobby } from './components/EnhancedLobby';
+import { Tutorial } from './components/Tutorial';
+import { VolumeControls } from './components/VolumeControls';
+import { VictoryScreen } from './components/VictoryScreen';
+import { GameOverScreen } from './components/GameOverScreen';
 
 type Screen = 'title' | 'lobby' | 'room' | 'game' | 'gameover' | 'win';
 
@@ -12,34 +20,76 @@ const App: React.FC = () => {
   const [roomName, setRoomName] = useState('');
   const [loading, setLoading] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [showTutorial, setShowTutorial] = useState(false);
+  const [showVolumeControls, setShowVolumeControls] = useState(false);
+  const [gameResult, setGameResult] = useState<{
+    pagesCollected: number;
+    totalPages: number;
+    duration: number;
+    players: any[];
+  } | null>(null);
 
   useEffect(() => {
+    injectLoadingStyles();
     gameState.connect();
     const unsub = gameState.subscribe(s => {
       setGs(s);
       // Route based on game phase
-      if (s.phase === GamePhase.PLAYING) setScreen('game');
-      else if (s.phase === GamePhase.GAME_OVER) setScreen('gameover');
-      else if (s.phase === GamePhase.WIN) setScreen('win');
-      else if (s.roomId && s.phase === GamePhase.LOBBY) setScreen('room');
+      if (s.phase === GamePhase.PLAYING) {
+        setScreen('game');
+      } else if (s.phase === GamePhase.GAME_OVER) {
+        setGameResult({
+          pagesCollected: s.pagesCollected,
+          totalPages: s.totalPages,
+          duration: Date.now(), // Will be updated from server
+          players: Array.from(s.players.values()),
+        });
+        setScreen('gameover');
+      } else if (s.phase === GamePhase.WIN) {
+        setGameResult({
+          pagesCollected: s.pagesCollected,
+          totalPages: s.totalPages,
+          duration: Date.now(),
+          players: Array.from(s.players.values()),
+        });
+        setScreen('win');
+      } else if (s.roomId && s.phase === GamePhase.LOBBY) {
+        setScreen('room');
+      }
     });
-    return unsub;
+
+    // Handle escape key for volume controls
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowVolumeControls(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      unsub();
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, []);
 
   const handleCreateRoom = async () => {
     if (!playerName.trim()) return;
     setLoading(true);
     setCreateError(null);
+    gameState.setLoading(true, 'Creating room...', 30);
     try {
       const id = await gameState.createRoom(roomName || `Room_${Math.random().toString(36).slice(2, 6)}`);
       if (id) {
+        gameState.setLoading(true, 'Joining room...', 70);
         gameState.joinRoom(id, playerName);
       } else {
         setCreateError('Could not create room. Is the server running?');
+        gameState.setLoading(false);
       }
     } catch (err) {
       console.error('handleCreateRoom error:', err);
       setCreateError('Unexpected error. Please try again.');
+      gameState.setLoading(false);
     } finally {
       setLoading(false);
     }
@@ -47,11 +97,13 @@ const App: React.FC = () => {
 
   const handleJoinRoom = (roomId: string) => {
     if (!playerName.trim()) return;
+    gameState.setLoading(true, 'Joining room...', 50);
     gameState.joinRoom(roomId, playerName);
   };
 
   const handleStartGame = () => {
     if (gs.roomId) {
+      gameState.setLoading(true, 'Starting game...', 90);
       gameState.startGame(gs.roomId);
     }
   };
@@ -62,183 +114,124 @@ const App: React.FC = () => {
 
   const goToTitle = () => {
     setScreen('title');
+    gameState.disconnect();
+    // Reconnect for next game
+    setTimeout(() => gameState.connect(), 500);
   };
+
+  const handleReconnect = () => {
+    gameState.reconnect();
+  };
+
+  // Show loading screen during connection/loading states
+  if (gs.isLoading) {
+    return (
+      <LoadingScreen
+        progress={gs.loadingProgress}
+        message={gs.loadingMessage}
+      />
+    );
+  }
 
   // === SCREENS ===
 
   if (screen === 'game') {
-    return <Game />;
-  }
-
-  if (screen === 'gameover') {
     return (
-      <HorrorScreen>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: '80px', marginBottom: '20px' }}>💀</div>
-          <h1 style={{
-            color: '#cc0000',
-            fontSize: '48px',
-            letterSpacing: '8px',
-            textShadow: '0 0 20px rgba(200,0,0,0.8)',
-            marginBottom: '16px',
-          }}>
-            IT FOUND YOU
-          </h1>
-          <p style={{ color: 'rgba(255,255,255,0.4)', letterSpacing: '3px', fontSize: '14px' }}>
-            {gs.pagesCollected} of {gs.totalPages} pages collected
-          </p>
-          <button onClick={goToTitle} style={horrorButtonStyle}>
-            TRY AGAIN
-          </button>
-        </div>
-      </HorrorScreen>
+      <>
+        <Game />
+        <ConnectionStatus
+          state={gs.connectionState}
+          latency={gs.latency}
+          onReconnect={handleReconnect}
+          showDetails={false}
+        />
+        {showVolumeControls && (
+          <VolumeControls
+            isOpen={showVolumeControls}
+            onClose={() => setShowVolumeControls(false)}
+          />
+        )}
+      </>
     );
   }
 
-  if (screen === 'win') {
+  if (screen === 'gameover' && gameResult) {
     return (
-      <HorrorScreen>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: '80px', marginBottom: '20px' }}>📄</div>
-          <h1 style={{
-            color: '#44ff44',
-            fontSize: '36px',
-            letterSpacing: '6px',
-            textShadow: '0 0 20px rgba(0,255,0,0.5)',
-            marginBottom: '16px',
-          }}>
-            YOU ESCAPED
-          </h1>
-          <p style={{ color: 'rgba(255,255,255,0.4)', letterSpacing: '3px', fontSize: '12px', marginBottom: '8px' }}>
-            All {gs.totalPages} pages collected
-          </p>
-          <p style={{ color: 'rgba(255,255,255,0.2)', letterSpacing: '2px', fontSize: '11px' }}>
-            But it will be waiting next time...
-          </p>
-          <button onClick={goToTitle} style={horrorButtonStyle}>
-            PLAY AGAIN
-          </button>
-        </div>
-      </HorrorScreen>
+      <GameOverScreen
+        pagesCollected={gameResult.pagesCollected}
+        totalPages={gameResult.totalPages}
+        duration={gameResult.duration}
+        players={gameResult.players}
+        killedBy="monster"
+        onPlayAgain={goToTitle}
+        onMainMenu={goToTitle}
+      />
+    );
+  }
+
+  if (screen === 'win' && gameResult) {
+    return (
+      <VictoryScreen
+        pagesCollected={gameResult.pagesCollected}
+        totalPages={gameResult.totalPages}
+        duration={gameResult.duration}
+        players={gameResult.players}
+        onPlayAgain={goToTitle}
+        onMainMenu={goToTitle}
+      />
     );
   }
 
   if (screen === 'room' && gs.roomId) {
     const myPlayerId = gs.playerId;
-    const isHost = gs.players.size > 0 && 
+    const isHost = gs.players.size > 0 &&
       Array.from(gs.players.keys())[0] === myPlayerId;
+
+    // Convert players Map to expected format
+    const room: GameRoom = {
+      id: gs.roomId,
+      name: gs.roomName || 'Unknown Room',
+      players: Array.from(gs.players.keys()),
+      maxPlayers: 4,
+      phase: GamePhase.LOBBY,
+      pages: [],
+      puzzles: [],
+      monster: {
+        position: { x: 0, y: 0, z: 0 },
+        rotation: 0,
+        state: 'idle' as any,
+        teleporting: false,
+        speed: 0,
+        visibleToPlayers: [],
+      },
+      pagesCollected: 0,
+      totalPages: gs.totalPages,
+      ambientEventTimer: 0,
+    };
 
     return (
       <HorrorScreen>
-        <div style={{ width: '500px' }}>
-          <h2 style={{
-            color: '#cc2222',
-            fontSize: '14px',
-            letterSpacing: '4px',
-            marginBottom: '4px',
-          }}>
-            ROOM: {gs.roomName}
-          </h2>
-          <div style={{
-            color: 'rgba(255,255,255,0.3)',
-            fontSize: '10px',
-            letterSpacing: '2px',
-            marginBottom: '24px',
-          }}>
-            {gs.players.size}/4 PLAYERS — WAITING...
-          </div>
-
-          {/* Player list */}
-          <div style={{
-            background: 'rgba(0,0,0,0.5)',
-            border: '1px solid rgba(255,50,50,0.2)',
-            borderRadius: '4px',
-            padding: '16px',
-            marginBottom: '24px',
-          }}>
-            {Array.from(gs.players.values()).map((p, i) => (
-              <div key={p.id} style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '12px',
-                padding: '8px 0',
-                borderBottom: i < gs.players.size - 1 ? '1px solid rgba(255,255,255,0.05)' : 'none',
-              }}>
-                <div style={{
-                  width: '10px',
-                  height: '10px',
-                  borderRadius: '50%',
-                  background: p.color,
-                  boxShadow: `0 0 6px ${p.color}`,
-                }} />
-                <span style={{ color: 'rgba(255,255,255,0.7)', letterSpacing: '1px', fontSize: '13px' }}>
-                  {p.name}
-                </span>
-                {i === 0 && (
-                  <span style={{ color: '#ffaa00', fontSize: '10px', marginLeft: 'auto' }}>HOST</span>
-                )}
-              </div>
-            ))}
-
-            {gs.players.size < 4 && (
-              <div style={{
-                padding: '8px 0',
-                color: 'rgba(255,255,255,0.15)',
-                fontSize: '11px',
-                letterSpacing: '2px',
-              }}>
-                {Array.from({ length: 4 - gs.players.size }, (_, i) => (
-                  <div key={i}>— EMPTY SLOT —</div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Room info */}
-          <div style={{
-            background: 'rgba(100,0,0,0.1)',
-            border: '1px solid rgba(255,50,50,0.1)',
-            borderRadius: '3px',
-            padding: '12px 16px',
-            marginBottom: '24px',
-            fontSize: '11px',
-            color: 'rgba(255,255,255,0.4)',
-            letterSpacing: '1px',
-            lineHeight: '1.8',
-          }}>
-            ⚠ Collect all 8 pages to escape<br />
-            ⚠ Cooperative puzzles require multiple players<br />
-            ⚠ Do not let it find you alone<br />
-            ⚠ Proximity voice chat enabled
-          </div>
-
-          <div style={{ display: 'flex', gap: '12px' }}>
-            {isHost ? (
-              <button
-                onClick={handleStartGame}
-                disabled={gs.players.size < 1}
-                style={{
-                  ...horrorButtonStyle,
-                  flex: 1,
-                  opacity: gs.players.size < 1 ? 0.4 : 1,
-                }}
-              >
-                BEGIN THE HUNT
-              </button>
-            ) : (
-              <div style={{
-                flex: 1,
-                textAlign: 'center',
-                color: 'rgba(255,255,255,0.3)',
-                fontSize: '12px',
-                letterSpacing: '2px',
-                padding: '12px',
-              }}>
-                WAITING FOR HOST...
-              </div>
-            )}
-          </div>
-        </div>
+        <EnhancedLobby
+          room={room}
+          players={gs.players}
+          myPlayerId={gs.playerId}
+          onStartGame={handleStartGame}
+          onLeaveRoom={goToTitle}
+          isHost={isHost}
+        />
+        <ConnectionStatus
+          state={gs.connectionState}
+          latency={gs.latency}
+          onReconnect={handleReconnect}
+        />
+        {gs.connectionError && (
+          <ErrorMessage
+            type="connection_lost"
+            message={gs.connectionError}
+            onRetry={handleReconnect}
+            onDismiss={() => {}}
+          />
+        )}
       </HorrorScreen>
     );
   }
@@ -247,26 +240,6 @@ const App: React.FC = () => {
     return (
       <HorrorScreen>
         <div style={{ width: '500px' }}>
-          {/* Connection status */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            marginBottom: '12px',
-            fontSize: '10px',
-            letterSpacing: '2px',
-            color: gs.isConnected ? 'rgba(50,255,50,0.6)' : 'rgba(255,100,50,0.7)',
-          }}>
-            <div style={{
-              width: '6px',
-              height: '6px',
-              borderRadius: '50%',
-              background: gs.isConnected ? '#44ff44' : '#ff6622',
-              boxShadow: gs.isConnected ? '0 0 6px #44ff44' : '0 0 6px #ff6622',
-            }} />
-            {gs.isConnected ? 'SERVER CONNECTED' : 'SERVER DISCONNECTED — CANNOT CREATE ROOMS'}
-          </div>
-
           <button
             onClick={goToTitle}
             style={{
@@ -315,8 +288,8 @@ const App: React.FC = () => {
             />
             <button
               onClick={handleCreateRoom}
-              disabled={!playerName.trim() || loading || !gs.isConnected}
-              style={{ ...horrorButtonStyle, width: '100%', opacity: (playerName.trim() && gs.isConnected) ? 1 : 0.4 }}
+              disabled={!playerName.trim() || loading || gs.connectionState !== 'connected'}
+              style={{ ...horrorButtonStyle, width: '100%', opacity: (playerName.trim() && gs.connectionState === 'connected') ? 1 : 0.4 }}
             >
               {loading ? 'CREATING...' : 'CREATE NEW ROOM'}
             </button>
@@ -398,12 +371,12 @@ const App: React.FC = () => {
                     </div>
                     <button
                       onClick={() => handleJoinRoom(room.id)}
-                      disabled={!playerName.trim() || !gs.isConnected}
+                      disabled={!playerName.trim() || gs.connectionState !== 'connected'}
                       style={{
                         ...horrorButtonStyle,
                         padding: '8px 16px',
                         fontSize: '10px',
-                        opacity: (playerName.trim() && gs.isConnected) ? 1 : 0.4,
+                        opacity: (playerName.trim() && gs.connectionState === 'connected') ? 1 : 0.4,
                       }}
                     >
                       JOIN
@@ -414,6 +387,12 @@ const App: React.FC = () => {
             )}
           </div>
         </div>
+        
+        <ConnectionStatus
+          state={gs.connectionState}
+          latency={gs.latency}
+          onReconnect={handleReconnect}
+        />
       </HorrorScreen>
     );
   }
@@ -421,13 +400,23 @@ const App: React.FC = () => {
   // Title screen
   return (
     <HorrorScreen>
-      <TitleScreen onPlay={() => setScreen('lobby')} />
+      <TitleScreen onPlay={() => setScreen('lobby')} onShowTutorial={() => setShowTutorial(true)} />
+      
+      {showTutorial && (
+        <Tutorial onClose={() => setShowTutorial(false)} />
+      )}
+      
+      <ConnectionStatus
+        state={gs.connectionState}
+        latency={gs.latency}
+        onReconnect={handleReconnect}
+      />
     </HorrorScreen>
   );
 };
 
 // Title Screen Component
-const TitleScreen: React.FC<{ onPlay: () => void }> = ({ onPlay }) => {
+const TitleScreen: React.FC<{ onPlay: () => void; onShowTutorial: () => void }> = ({ onPlay, onShowTutorial }) => {
   const [glitch, setGlitch] = useState(false);
 
   useEffect(() => {
@@ -503,6 +492,25 @@ const TitleScreen: React.FC<{ onPlay: () => void }> = ({ onPlay }) => {
         <button onClick={onPlay} style={{ ...horrorButtonStyle, fontSize: '16px', padding: '16px 48px' }}>
           ENTER THE FOREST
         </button>
+        
+        <div style={{ marginTop: '16px' }}>
+          <button 
+            onClick={onShowTutorial}
+            style={{
+              background: 'transparent',
+              border: '1px solid rgba(255,255,255,0.2)',
+              color: 'rgba(255,255,255,0.4)',
+              padding: '10px 24px',
+              fontSize: '11px',
+              letterSpacing: '2px',
+              cursor: 'pointer',
+              borderRadius: '3px',
+              fontFamily: 'Courier New, monospace',
+            }}
+          >
+            HOW TO PLAY
+          </button>
+        </div>
 
         <div style={{
           marginTop: '24px',
